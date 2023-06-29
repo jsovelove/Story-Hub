@@ -203,7 +203,7 @@ const EnterInterviewsIntentHandler = {
 };
 
 
-async function playAudioUrls(handlerInput, tracks, currentIndex = 0, offsetInMilliseconds = 0) {
+async function playAudioUrls(handlerInput, tracks, currentIndex = 0, offsetInMilliseconds = 0, isSkip = false) {
   const { attributesManager } = handlerInput;
   const playbackInfo = {
     queue: tracks,
@@ -216,13 +216,16 @@ async function playAudioUrls(handlerInput, tracks, currentIndex = 0, offsetInMil
 
   const currentTrack = tracks[currentIndex];
   const audioUrl = currentTrack.url;
-  const playBehavior = currentIndex === 0 ? 'REPLACE_ALL' : 'ENQUEUE';
-  const expectedPreviousToken = currentIndex === 0 ? null : tracks[currentIndex - 1].url;
+  const playBehavior = currentIndex === 0 || isSkip ? 'REPLACE_ALL' : 'ENQUEUE';
+
+  const expectedPreviousToken = playBehavior === 'REPLACE_ALL' ? null : tracks[currentIndex - 1].url;
 
   return handlerInput.responseBuilder
     .addAudioPlayerPlayDirective(playBehavior, audioUrl, audioUrl, playbackInfo.offsetInMilliseconds, expectedPreviousToken)
     .getResponse();
 }
+
+
 
 
 
@@ -364,7 +367,6 @@ const PathChoiceIntentHandler = {
   async handle(handlerInput) {
     const userChoice = Alexa.getSlotValue(handlerInput.requestEnvelope, 'path');
     
-    // Query Firestore for interviews matching the user's choice of theme
     try {
       const interviewDocs = await DB.collection('audio collections')
         .doc('pandemic interviews')
@@ -373,7 +375,6 @@ const PathChoiceIntentHandler = {
         .orderBy('themeOrder')
         .get();
 
-      // Map the documents to a list of audio tracks
       const tracks = interviewDocs.docs.map(doc => {
         const data = doc.data();
         return {
@@ -384,9 +385,54 @@ const PathChoiceIntentHandler = {
         };
       });
     
-      // Now play these tracks
       return playAudioUrls(handlerInput, tracks, 0);
 
+    } catch (error) {
+      console.error(`Error retrieving data from Firestore: ${error}`);
+      const speakOutput = `Error retrieving data from Firestore: ${error}`;
+      return handlerInput.responseBuilder
+        .speak(speakOutput)
+        .getResponse();
+    }
+  },
+};
+
+
+const ReEnterMainPlaylistIntentHandler = {
+  canHandle(handlerInput) {
+    return (
+      Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest' &&
+      Alexa.getIntentName(handlerInput.requestEnvelope) === 'reEnterMainPlaylistIntent'
+    );
+  },
+  async handle(handlerInput) {
+    try {
+      const interviewDocs = await DB.collection('audio collections')
+        .doc('pandemic interviews') 
+        .collection('interviews')
+        .where('mainPlaylist2', '==', true)
+        .orderBy('playOrder2')
+        .get();
+
+      const tracks = interviewDocs.docs.map(doc => {
+        let data = doc.data();
+        return {
+          url: data.url,
+          token: data.url,
+          name: data.name,
+          theme: data.theme,
+          isBranchingPoint: data.isBranchingPoint || false
+        }
+      });
+
+      if (tracks.length === 0) {
+        const speakOutput = `Sorry, no interviews were found for the main playlist.`;
+        return handlerInput.responseBuilder
+          .speak(speakOutput)
+          .getResponse();
+      } else {
+        return playAudioUrls(handlerInput, tracks, 0);
+      }
     } catch (error) {
       console.error(`Error retrieving data from Firestore: ${error}`);
       const speakOutput = `Error retrieving data from Firestore: ${error}`;
@@ -442,32 +488,53 @@ const SkipIntentHandler = {
     );
   },
   async handle(handlerInput) {
-    
     const { attributesManager } = handlerInput;
     let playbackInfo = await attributesManager.getPersistentAttributes();
 
-    
-    if (playbackInfo.currentIndex + 1 < playbackInfo.queue.length) {
-      playbackInfo.currentIndex += 1;
+    const nextIndex = playbackInfo.currentIndex + 1;
 
-      
-      const remainingUrls = playbackInfo.queue.slice(playbackInfo.currentIndex);
+    if (nextIndex < playbackInfo.queue.length) {
+      playbackInfo.currentIndex = nextIndex;
 
-      
       attributesManager.setPersistentAttributes(playbackInfo);
       await attributesManager.savePersistentAttributes();
 
-      
-      return playAudioUrls(handlerInput, remainingUrls, 0);
+    return playAudioUrls(handlerInput, playbackInfo.queue, playbackInfo.currentIndex, 0, true);
+
     } else {
-      
-      const speakOutput = 'There is no next audio to play.';
+      return handlerInput.responseBuilder.getResponse();
+    }
+  },
+};
+
+const PreviousIntentHandler = {
+  canHandle(handlerInput) {
+    return (
+      Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest' &&
+      Alexa.getIntentName(handlerInput.requestEnvelope) === 'AMAZON.PreviousIntent'
+    );
+  },
+  async handle(handlerInput) {
+    const { attributesManager } = handlerInput;
+    let playbackInfo = await attributesManager.getPersistentAttributes();
+
+    if (playbackInfo.currentIndex > 0) {
+      playbackInfo.currentIndex -= 1;
+
+      attributesManager.setPersistentAttributes(playbackInfo);
+      await attributesManager.savePersistentAttributes();
+
+      return playAudioUrls(handlerInput, playbackInfo.queue, playbackInfo.currentIndex, 0, true);
+    } else {
+      const speakOutput = 'This is the first track in the playlist.';
       return handlerInput.responseBuilder
         .speak(speakOutput)
         .getResponse();
     }
   },
 };
+
+
 
 
 
@@ -598,8 +665,10 @@ exports.handler = Alexa.SkillBuilders.custom()
         EnterThemeIntentHandler,
         MoreFromCurrentIntentHandler,
         PathChoiceIntentHandler,
+        ReEnterMainPlaylistIntentHandler,
         PlayCurrentThemeIntentHandler,
         SkipIntentHandler,
+        PreviousIntentHandler,
         SystemExceptionHandler,
         AudioPlayerEventHandler,
         PauseIntentHandler,
