@@ -122,11 +122,19 @@ const EnterCollectionIntentHandler = {
     sessionAttributes.collectionName = collectionName;
 
     try {
-      const audioCollectionsRef = DB.collection('audio collections').doc(collectionName).collection('interviews');
-      const mainPlaylistDocsRef = audioCollectionsRef
-        .where('mainPlaylist', '==', true)
-        .orderBy('mainPlaylistOrder');
+      let audioCollectionsRef;
+      let mainPlaylistDocsRef;
       
+      if (collectionName.toLowerCase() === 'cornish myths') {
+        audioCollectionsRef = DB.collection('audio collections').doc('cornish myths').collection('stories');
+        mainPlaylistDocsRef = audioCollectionsRef.orderBy('playOrder');
+      } else {
+        audioCollectionsRef = DB.collection('audio collections').doc(collectionName).collection('interviews');
+        mainPlaylistDocsRef = audioCollectionsRef
+          .where('mainPlaylist', '==', true)
+          .orderBy('mainPlaylistOrder');
+      }
+
       const mainPlaylistDocsSnapshot = await mainPlaylistDocsRef.get();
       const tracks = [];
 
@@ -137,6 +145,7 @@ const EnterCollectionIntentHandler = {
             name: data.name,
             url: data.url,
             theme: data.theme,
+            introName: data.introName,
             isBranchingPoint: data.isBranchingPoint || false,
           });
         }
@@ -249,7 +258,7 @@ const AudioPlayerEventHandler = {
       case 'AudioPlayer.PlaybackStopped':
         const { request } = handlerInput.requestEnvelope;
         const { offsetInMilliseconds } = request;
-
+        
         playbackInfo.offsetInMilliseconds = offsetInMilliseconds;
         await attributesManager.setPersistentAttributes(playbackInfo);
         await attributesManager.savePersistentAttributes();
@@ -444,6 +453,194 @@ const ReEnterMainPlaylistIntentHandler = {
 };
 
 
+const GetMenuIntentHandler = {
+  canHandle(handlerInput) {
+    return (
+      Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest' &&
+      Alexa.getIntentName(handlerInput.requestEnvelope) === 'getMenu'
+    );
+  },
+  handle(handlerInput) {
+    const audioUrl = 'https://storage.googleapis.com/interactive-audio-collection.appspot.com/audio_collections/cornish-myths/Menu%20Commands.mp3';
+
+    const tracks = [{
+      name: "menu",
+      url: audioUrl
+    }];
+
+    return playAudioUrls(handlerInput, tracks, 0);
+  },
+};
+
+
+const PlayStoryIntentHandler = {
+  canHandle(handlerInput) {
+    return (
+      Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest' &&
+      Alexa.getIntentName(handlerInput.requestEnvelope) === 'playStory'
+    );
+  },
+  async handle(handlerInput) {
+    const storyTitle = Alexa.getSlotValue(handlerInput.requestEnvelope, 'story_title');
+    console.info(`Story title: ${storyTitle}`);
+
+    const storyNumber = Alexa.getSlotValue(handlerInput.requestEnvelope, 'story_number');
+    console.info(`Story number: ${storyNumber}`);
+
+    try {
+      const audioCollectionsRef = DB.collection('audio collections').doc('cornish myths').collection('stories');
+      let storyRef;
+
+      if (storyTitle) {
+        storyRef = audioCollectionsRef.where('name', '==', storyTitle.toLowerCase());
+      } else if (storyNumber) {
+        storyRef = audioCollectionsRef.where('storyNumber', '==', storyNumber);
+      } else {
+        throw new Error('No valid slot value provided for story retrieval.');
+      }
+        
+      const storySnapshot = await storyRef.get();
+      const tracks = [];
+
+      storySnapshot.forEach(doc => {
+        const data = doc.data();
+        if (data.url) { 
+          tracks.push({
+            name: data.name,
+            url: data.url,
+          });
+        }
+      });
+
+      return playAudioUrls(handlerInput, tracks, 0);
+      
+    } catch (error) {
+      console.error(`Error retrieving data from Firestore: ${error}`);
+      const speakOutput = 'Sorry, an error occurred while retrieving the story. Please try again later.';
+      return handlerInput.responseBuilder
+        .speak(speakOutput)
+        .getResponse();
+    }
+  },
+};
+
+
+const IntroduceIntentHandler = {
+  canHandle(handlerInput) {
+    return (
+      Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest' &&
+      Alexa.getIntentName(handlerInput.requestEnvelope) === 'introduceIntent'
+    );
+  },
+  async handle(handlerInput) {
+    const storyTitle = Alexa.getSlotValue(handlerInput.requestEnvelope, 'story_title');
+    console.info(`Story title: ${storyTitle}`);
+    const storyNumber = Alexa.getSlotValue(handlerInput.requestEnvelope, 'story_number');
+    console.info(`Story number: ${storyNumber}`);
+
+    try {
+      const audioCollectionsRef = DB.collection('audio collections').doc('cornish myths').collection('stories');
+      let storyRef;
+
+      if (storyTitle) {
+        storyRef = audioCollectionsRef.where('introName', '==', storyTitle.toLowerCase());
+      } else if (storyNumber) {
+        storyRef = audioCollectionsRef.where('introNumber', '==', storyNumber);
+      } else {
+        throw new Error('No valid slot value provided for story retrieval.');
+      }
+
+      const storySnapshot = await storyRef.get();
+      const tracks = [];
+
+      storySnapshot.forEach(doc => {
+        const data = doc.data();
+        if (data.url) { 
+          tracks.push({
+            name: data.name,
+            url: data.url,
+          });
+        }
+      });
+
+      return playAudioUrls(handlerInput, tracks, 0);
+
+    } catch (error) {
+      console.error(`Error retrieving data from Firestore: ${error}`);
+      const speakOutput = 'Sorry, an error occurred while retrieving the data. Please try again later.';
+      return handlerInput.responseBuilder
+        .speak(speakOutput)
+        .getResponse();
+    }
+  },
+};
+
+const FastForwardIntentHandler = {
+  canHandle(handlerInput) {
+    return (
+      Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest' &&
+      Alexa.getIntentName(handlerInput.requestEnvelope) === 'fastForward'
+    );
+  },
+  async handle(handlerInput) {
+    const duration = Alexa.getSlotValue(handlerInput.requestEnvelope, 'time');
+    
+    const fastForwardMs = parseDuration(duration);
+
+    const { attributesManager } = handlerInput;
+    let playbackInfo = await attributesManager.getPersistentAttributes();
+
+    const urls = playbackInfo.queue;
+    const currentIndex = playbackInfo.currentIndex;
+    const offsetInMilliseconds = playbackInfo.offsetInMilliseconds + fastForwardMs;
+
+    return playAudioUrls(handlerInput, urls, currentIndex, offsetInMilliseconds, true);
+  },
+};
+
+const RewindIntentHandler = {
+  canHandle(handlerInput) {
+    return (
+      Alexa.getRequestType(handlerInput.requestEnvelope) === 'IntentRequest' &&
+      Alexa.getIntentName(handlerInput.requestEnvelope) === 'rewind'
+    );
+  },
+  async handle(handlerInput) {
+    const duration = Alexa.getSlotValue(handlerInput.requestEnvelope, 'time');
+    
+    const rewindMs = parseDuration(duration);
+
+    const { attributesManager } = handlerInput;
+    let playbackInfo = await attributesManager.getPersistentAttributes();
+
+    const urls = playbackInfo.queue;
+    const currentIndex = playbackInfo.currentIndex;
+    let offsetInMilliseconds = playbackInfo.offsetInMilliseconds - rewindMs;
+
+    offsetInMilliseconds = Math.max(0, offsetInMilliseconds);
+
+    return playAudioUrls(handlerInput, urls, currentIndex, offsetInMilliseconds, true);
+  },
+};
+
+
+function parseDuration(duration) {
+  let milliseconds;
+
+  const durationValue = parseInt(duration.slice(2), 10);
+
+  if (duration.includes('M')) {
+    milliseconds = durationValue * 60 * 1000;
+  } else if (duration.includes('S')) {
+    milliseconds = durationValue * 1000;
+  } else {
+    throw new Error('Invalid duration format');
+  }
+
+  return milliseconds;
+}
+
+
 
 
 const PauseIntentHandler = {
@@ -475,7 +672,7 @@ const ResumeIntentHandler = {
     const currentIndex = playbackInfo.currentIndex;
     const offsetInMilliseconds = playbackInfo.offsetInMilliseconds;
 
-    return playAudioUrls(handlerInput, urls, currentIndex, offsetInMilliseconds);
+    return playAudioUrls(handlerInput, urls, currentIndex, offsetInMilliseconds, true);
   },
 };
 
@@ -633,7 +830,6 @@ const LoadPersistentAttributesRequestInterceptor = {
         offsetInMilliseconds: 0,
       };
 
-      
       persistentAttributes.playbackSetting = playbackSetting;
       persistentAttributes.playbackInfo = playbackInfo;
       attributesManager.setPersistentAttributes(persistentAttributes);
@@ -669,7 +865,12 @@ exports.handler = Alexa.SkillBuilders.custom()
         PlayCurrentThemeIntentHandler,
         SkipIntentHandler,
         PreviousIntentHandler,
+        FastForwardIntentHandler,
+        RewindIntentHandler,
         SystemExceptionHandler,
+        GetMenuIntentHandler,
+        IntroduceIntentHandler,
+        PlayStoryIntentHandler,
         AudioPlayerEventHandler,
         PauseIntentHandler,
         ResumeIntentHandler,
